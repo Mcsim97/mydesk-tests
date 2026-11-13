@@ -1,0 +1,77 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 6 * * *'        # nightly run — catches flaky tests and changes in the app
+
+jobs:
+  playwright:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout tests
+        uses: actions/checkout@v4
+
+      # The app under test lives in a private repo → needs a fine-grained token (Contents: read) in the secret MYDESK_REPO_TOKEN
+      - name: Check secret
+        id: secret
+        run: |
+          if [ -z "${{ secrets.MYDESK_REPO_TOKEN }}" ]; then echo "::warning::Add the secret MYDESK_REPO_TOKEN (read access to Mcsim97/mydesk) — tests are skipped"; echo "ok=false" >> "$GITHUB_OUTPUT"; else echo "ok=true" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Checkout MyDesk (app under test)
+        if: steps.secret.outputs.ok == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: Mcsim97/mydesk
+          token: ${{ secrets.MYDESK_REPO_TOKEN }}
+          path: app
+
+      - uses: actions/setup-node@v4
+        if: steps.secret.outputs.ok == 'true'
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install app
+        if: steps.secret.outputs.ok == 'true'
+        working-directory: app
+        env:
+          PUPPETEER_SKIP_DOWNLOAD: '1'
+        run: npm ci --omit=dev
+
+      - name: Install tests + browser
+        if: steps.secret.outputs.ok == 'true'
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Typecheck
+        if: steps.secret.outputs.ok == 'true'
+        run: npx tsc --noEmit
+
+      - name: Run tests
+        if: steps.secret.outputs.ok == 'true'
+        env:
+          MYDESK_APP_DIR: app
+          MYDESK_URL: ${{ secrets.MYDESK_URL }}        # optional: send results to MyDesk «Качество» (server must be reachable from GitHub)
+          MYDESK_QA_KEY: ${{ secrets.MYDESK_QA_KEY }}
+        run: npx playwright test
+
+      - name: Playwright HTML report
+        if: always() && steps.secret.outputs.ok == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 14
+
+      - name: Allure results
+        if: always() && steps.secret.outputs.ok == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: allure-results
+          path: allure-results/
+          retention-days: 14
